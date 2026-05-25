@@ -15,14 +15,17 @@ import DeepLinkKit
 
 let router = DeepLinkRouter()
 
-// Register what URL patterns the app cares about.
+// Register what URL patterns the app cares about. The router
+// guarantees `pathParameters[name]` exists when the handler
+// fires (the pattern matched), but the `?? ""` belt is cheap
+// insurance against future refactors.
 await router.register(RoutePattern("/bill/{id}")) { link in
-    let billId = link.pathParameters["id"]!
+    let billId = link.pathParameters["id"] ?? ""
     await coordinator.openBill(id: billId)
 }
 
 await router.register(RoutePattern("/share/{token}")) { link in
-    let token = link.pathParameters["token"]!
+    let token = link.pathParameters["token"] ?? ""
     await coordinator.openSharedCard(token: token)
 }
 

@@ -140,6 +140,54 @@ final class DeepLinkRouterTests: XCTestCase {
         XCTAssertFalse(stashed)
     }
 
+    func test_concurrentHandleCallsAllLand() async throws {
+        // Hardens the actor's serialization claim: 10 parallel
+        // `handle()` calls should all execute the handler exactly
+        // once each, in some serial order.
+        let router = DeepLinkRouter()
+        let recorder = Recorder()
+        await router.register(RoutePattern("/bill/{id}")) { link in
+            recorder.record(link)
+        }
+        await router.signalReady()
+
+        let urls = (0..<10).compactMap { URL(string: "https://ayes.app/bill/HR\($0)") }
+        XCTAssertEqual(urls.count, 10)
+
+        await withTaskGroup(of: Void.self) { group in
+            for url in urls {
+                group.addTask {
+                    try? await router.handle(url: url, source: .universalLink)
+                }
+            }
+        }
+
+        let ids = Set(recorder.calls.compactMap { $0.pathParameters["id"] })
+        XCTAssertEqual(ids.count, 10)
+        XCTAssertEqual(Set(ids), Set((0..<10).map { "HR\($0)" }))
+    }
+
+    func test_signalReadyReturnsReplayFailure() async throws {
+        // Cold-launch URL that doesn't match any registered
+        // pattern surfaces as `.failure` rather than being
+        // silently swallowed. Hosts log + drop; the visibility
+        // is what matters.
+        let router = DeepLinkRouter()
+        let url = try XCTUnwrap(URL(string: "https://ayes.app/totally-unknown"))
+        try await router.handle(url: url, source: .universalLink)
+
+        let result = await router.signalReady()
+        guard case .failure(let error) = result else {
+            XCTFail("expected .failure for unmatched stashed URL, got \(String(describing: result))")
+            return
+        }
+        guard case DeepLinkError.unmatchedRoute(let captured) = error else {
+            XCTFail("expected unmatchedRoute, got \(error)")
+            return
+        }
+        XCTAssertEqual(captured, url)
+    }
+
     func test_signalReadyTwiceIsSafe() async throws {
         let router = DeepLinkRouter()
         let recorder = Recorder()

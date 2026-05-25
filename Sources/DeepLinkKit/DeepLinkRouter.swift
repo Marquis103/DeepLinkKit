@@ -65,6 +65,12 @@ public actor DeepLinkRouter {
     /// the URL is matched against registered patterns; the first
     /// match's handler runs and `handle` returns. If no pattern
     /// matches, throws `DeepLinkError.unmatchedRoute`.
+    ///
+    /// Concurrency: the `isReady` read + `stashedURL` write
+    /// below are atomic relative to `signalReady()` because the
+    /// actor doesn't suspend between them — no `await` between
+    /// the guard and the assignment. A concurrent `signalReady`
+    /// can't flip `isReady` mid-method and strand the URL.
     public func handle(
         url: URL,
         source: DeepLink.Source = .urlScheme
@@ -89,15 +95,30 @@ public actor DeepLinkRouter {
     }
 
     /// Flip the router into the ready state and replay any stashed
-    /// URL. Idempotent — calling twice is a no-op on the second
-    /// call (stash is consumed by the first replay).
-    public func signalReady() async {
+    /// URL. Idempotent — explicit `guard !isReady` short-circuits
+    /// the second call so intent is obvious (the stash-nil check
+    /// alone would also work, but reads more like an accident).
+    ///
+    /// Returns the replay result so callers can surface a log /
+    /// metric if the stashed URL didn't match any handler. Hosts
+    /// typically discard the result with `_ = await …`; the cold-
+    /// launch unmatched case is exactly the moment you want to
+    /// know something is wrong, so we make it observable rather
+    /// than swallowing.
+    @discardableResult
+    public func signalReady() async -> Result<Void, Error>? {
+        guard !isReady else { return nil }
         isReady = true
-        guard let url = stashedURL else { return }
+        guard let url = stashedURL else { return nil }
         let source = stashedSource ?? .urlScheme
         stashedURL = nil
         stashedSource = nil
-        try? await route(url: url, source: source)
+        do {
+            try await route(url: url, source: source)
+            return .success(())
+        } catch {
+            return .failure(error)
+        }
     }
 
     // MARK: - Internal (test surface)
